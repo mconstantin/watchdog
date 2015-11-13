@@ -21,8 +21,11 @@ from __future__ import with_statement
 
 import ctypes
 import threading
+from Queue import Queue
 import os.path
 import time
+from Queue import Queue
+from watchdog.utils import BaseThread
 
 from watchdog.events import (
     DirCreatedEvent,
@@ -61,17 +64,36 @@ class WindowsApiEmitter(EventEmitter):
     to detect file system changes for a watch.
     """
 
+    class GenerateThread(BaseThread):
+        def __init__(self, outer):
+            super(WindowsApiEmitter.GenerateThread, self).__init__()
+            self.event_emitter = outer
+
+        def run(self):
+            while self.should_keep_running():
+                event = self.event_emitter.in_queue.get()
+                if type(event) == DirCreatedEvent:
+                    self.event_emitter.generate_dir_created_events(event.src_path)
+
     def __init__(self, event_queue, watch, timeout=DEFAULT_EMITTER_TIMEOUT):
         EventEmitter.__init__(self, event_queue, watch, timeout)
         self._lock = threading.Lock()
         self._handle = None
+        self.in_queue = Queue()
+        self.subdirectory_thread = self.create_worker_thread()
+
+    def create_worker_thread(self):
+        return WindowsApiEmitter.GenerateThread(self)
 
     def on_thread_start(self):
         self._handle = get_directory_handle(self.watch.path)
+        self.subdirectory_thread.start()
 
     def on_thread_stop(self):
         if self._handle:
             close_directory_handle(self._handle)
+        if self.subdirectory_thread:
+            self.subdirectory_thread.stop()
 
     def queue_events(self, timeout):
         winapi_events = read_events(self._handle, self.watch.is_recursive)
@@ -116,12 +138,42 @@ class WindowsApiEmitter(EventEmitter):
                         # If a directory is moved from outside the watched folder to inside it
                         # we only get a created directory event out of it, not any events for its children
                         # so use the same hack as for file moves to get the child events
-                        time.sleep(WATCHDOG_TRAVERSE_MOVED_DIR_DELAY)
-                        sub_events = generate_sub_created_events(src_path)
-                        for sub_created_event in sub_events:
-                            self.queue_event(sub_created_event)
+                        # time.sleep(WATCHDOG_TRAVERSE_MOVED_DIR_DELAY)
+                        # sub_events = generate_sub_created_events(src_path)
+                        # for sub_created_event in sub_events:
+                        #     self.queue_event(sub_created_event)
+                        self.in_queue.put(cls(src_path))
                 elif winapi_event.is_removed:
                     self.queue_event(FileDeletedEvent(src_path))
+
+    def generate_dir_created_events(self, root):
+        children = {}
+        tries = 3
+        new_found = False
+        while True:
+            time.sleep(1)
+            for path, directories, files in os.walk(root):
+                for d in directories:
+                    dir_path = os.path.join(path, d)
+                    if dir_path not in children:
+                        try:
+                            self.queue_event(DirCreatedEvent(dir_path))
+                            children[dir_path] = True
+                            new_found = True
+                        except Queue.Full:
+                            pass
+                for f in files:
+                    file_path = os.path.join(path, f)
+                    if not file_path not in children:
+                        try:
+                            self.queue_event(FileCreatedEvent(file_path))
+                            children[file_path] = True
+                            new_found = True
+                        except Queue.Full:
+                            pass
+            if tries == 0 or not new_found:
+                break
+            new_found = False
 
 
 class WindowsApiObserver(BaseObserver):
