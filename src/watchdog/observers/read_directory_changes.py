@@ -26,6 +26,7 @@ import os.path
 import time
 from Queue import Queue
 from watchdog.utils import BaseThread
+from watchdog.utils import safe_print
 
 from watchdog.events import (
     DirCreatedEvent,
@@ -114,7 +115,9 @@ class WindowsApiEmitter(EventEmitter):
                             # traversing the moved directory. This will read
                             # only file movement that finishes within this
                             # delay time.
-                            time.sleep(WATCHDOG_TRAVERSE_MOVED_DIR_DELAY)
+
+                            # time.sleep(WATCHDOG_TRAVERSE_MOVED_DIR_DELAY)
+
                             # The following block of code may not
                             # obtain moved events for the entire tree if
                             # the I/O is not completed within the above
@@ -122,8 +125,14 @@ class WindowsApiEmitter(EventEmitter):
                             # TODO: Come up with a better solution, possibly
                             # a way to wait for I/O to complete before
                             # queuing events.
-                            for sub_moved_event in generate_sub_moved_events(src_path, dest_path):
-                                self.queue_event(sub_moved_event)
+
+                            # for sub_moved_event in generate_sub_moved_events(src_path, dest_path):
+                            #     self.queue_event(sub_moved_event)
+                            pass
+                        # generating move events for direct descendants of the directory
+                        # should happen regardless of the recursive watch, right?
+                        self.in_queue.put(event)
+                        safe_print('DirMovedEvent: %s->%s' % (src_path, dest_path))
                         self.queue_event(event)
                     else:
                         self.queue_event(FileMovedEvent(src_path, dest_path))
@@ -138,20 +147,24 @@ class WindowsApiEmitter(EventEmitter):
                         # If a directory is moved from outside the watched folder to inside it
                         # we only get a created directory event out of it, not any events for its children
                         # so use the same hack as for file moves to get the child events
+
                         # time.sleep(WATCHDOG_TRAVERSE_MOVED_DIR_DELAY)
                         # sub_events = generate_sub_created_events(src_path)
                         # for sub_created_event in sub_events:
                         #     self.queue_event(sub_created_event)
                         self.in_queue.put(cls(src_path))
+                        safe_print('DirCreatedEvent: %s' % src_path)
                 elif winapi_event.is_removed:
                     self.queue_event(FileDeletedEvent(src_path))
 
     def generate_dir_created_events(self, root):
         children = {}
-        tries = 3
+        total = []
+        pass_total = 0
+        tries = 10
         new_found = False
         while True:
-            time.sleep(1)
+            time.sleep(0.1)
             for path, directories, files in os.walk(root):
                 for d in directories:
                     dir_path = os.path.join(path, d)
@@ -160,20 +173,80 @@ class WindowsApiEmitter(EventEmitter):
                             self.queue_event(DirCreatedEvent(dir_path))
                             children[dir_path] = True
                             new_found = True
+                            pass_total += 1
                         except Queue.Full:
                             pass
                 for f in files:
                     file_path = os.path.join(path, f)
-                    if not file_path not in children:
+                    if file_path not in children:
                         try:
                             self.queue_event(FileCreatedEvent(file_path))
                             children[file_path] = True
                             new_found = True
+                            pass_total += 1
                         except Queue.Full:
                             pass
             if tries == 0 or not new_found:
+                total.append(sum(total))
+                safe_print('generated %s sub-events for dir %s created (%s)' % \
+                      (total, root, 'no more tries' if tries == 0 else 'no more changes'))
                 break
             new_found = False
+            tries -= 1
+            total.append(pass_total)
+
+
+    def generate_dir_moved_events(self, src_dir_path, dest_dir_path):
+        """Generates an event list of :class:`DirMovedEvent` and
+        :class:`FileMovedEvent` objects for all the files and directories within
+        the given moved directory that were moved along with the directory.
+
+        :param src_dir_path:
+            The source path of the moved directory.
+        :param dest_dir_path:
+            The destination path of the moved directory.
+        :returns:
+            An iterable of file system events of type :class:`DirMovedEvent` and
+            :class:`FileMovedEvent`.
+        """
+        children = {}
+        total = []
+        pass_total = 0
+        tries = 10
+        new_found = False
+        while True:
+            time.sleep(0.1)
+            for path, directories, files in os.walk(dest_dir_path):
+                for d in directories:
+                    dir_path = os.path.join(path, d)
+                    renamed_dir_path = dir_path.replace(dest_dir_path, src_dir_path) if src_dir_path else None
+                    if dir_path not in children:
+                        try:
+                            self.queue_event(DirMovedEvent(renamed_dir_path, dir_path))
+                            children[dir_path] = True
+                            new_found = True
+                            pass_total += 1
+                        except Queue.Full:
+                            pass
+                for f in files:
+                    file_path = os.path.join(path, f)
+                    renamed_file_path = file_path.replace(dest_dir_path, src_dir_path) if src_dir_path else None
+                    if file_path not in children:
+                        try:
+                            self.queue_event(FileMovedEvent(renamed_file_path, file_path))
+                            children[file_path] = True
+                            new_found = True
+                            pass_total += 1
+                        except Queue.Full:
+                            pass
+            if tries == 0 or not new_found:
+                total.append(sum(total))
+                safe_print('generated %s sub-events for dir move %s->%s (%s)' % \
+                      (total, src_dir_path, dest_dir_path, 'no more tries' if tries == 0 else 'no more changes'))
+                break
+            new_found = False
+            tries -= 1
+            total.append(pass_total)
 
 
 class WindowsApiObserver(BaseObserver):

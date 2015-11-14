@@ -253,7 +253,7 @@ WATCHDOG_FILE_NOTIFY_FLAGS = reduce(
         FILE_NOTIFY_CHANGE_CREATION,
     ])
 
-BUFFER_SIZE = 2048
+BUFFER_SIZE = 8096
 
     
 def _parse_event_buffer(readBuffer, nBytes):
@@ -346,7 +346,9 @@ class WinAPINativeEvent(object):
 def read_events(handle, recursive):
     buf, nbytes = read_directory_changes(handle, recursive)
     events = _parse_event_buffer(buf, nbytes)
-    print 'size of raw buffer=%d' % nbytes
-    print '%d events from ReadDirectoryChangesW' % len(events)
-    print events
+
+    from collections import Counter
+    from watchdog.utils import safe_print
+    safe_print('Got %d events (raw size=%d)\n%r' % (len(events), nbytes, Counter(events).most_common()))
+
     return [WinAPINativeEvent(action, path) for action, path in events]

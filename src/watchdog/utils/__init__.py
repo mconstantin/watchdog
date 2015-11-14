@@ -156,3 +156,6 @@ def load_class(dotted_path):
     else:
         raise ValueError(
             'Dotted module path %s must contain a module name and a classname' % dotted_path)
+
+def safe_print(content):
+    print "{0}\n".format(content)
