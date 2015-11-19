@@ -149,6 +149,16 @@ class FileSystemEvent(object):
     def __hash__(self):
         return hash(self.key)
 
+    def __cmp__(self, other):
+        if not isinstance(other, FileSystemEvent):
+            raise TypeError('other is of type %s, should be %s' % (type(other), self.__class__))
+        if self.src_path.startswith(other.src_path):
+            return -1
+        if other.src_path.startswith(self.src_path):
+            return 1
+        else:
+            return -0
+
 
 class FileSystemMovedEvent(FileSystemEvent):
     """
